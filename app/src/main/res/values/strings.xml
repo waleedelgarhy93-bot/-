@@ -1,0 +1,35 @@
+<resources>
+    <string name="app_name">سجل السنتر</string>
+    <string name="app_subtitle">إدارة السناتر والحضور والمصروفات</string>
+    <string name="cd_back">رجوع</string>
+    <string name="cd_voice_input">إدخال صوتي بالعربية</string>
+    <string name="cd_clear_text">مسح النص</string>
+    <string name="cd_manage_centers">إدارة السناتر والمراحل</string>
+    <string name="cd_backup_restore">النسخ الاحتياطي والاستعادة</string>
+    <string name="cd_prev_month">الشهر السابق</string>
+    <string name="cd_next_month">الشهر التالي</string>
+    <string name="cd_more_options">خيارات إضافية</string>
+    <string name="cd_dashboard_pattern">خلفية لوحة الإحصائيات</string>
+    <string name="voice_prompt_arabic">تحدث الآن باللغة العربية…</string>
+    <string name="voice_unavailable">الإدخال الصوتي غير متوفر على هذا الجهاز</string>
+    <string name="currency_egp">ج.م</string>
+    <string name="expected_revenue">المستهدف الشهري</string>
+    <string name="collected_revenue">المُحصَّل فعلياً</string>
+    <string name="remaining_revenue">المتبقي</string>
+    <string name="all_centers">كل السناتر</string>
+    <string name="all_stages">كل المراحل</string>
+    <string name="add_group">مجموعة جديدة</string>
+    <string name="add_student">إضافة طالب</string>
+    <string name="filter_all_active">الكل (نشط)</string>
+    <string name="filter_paid">دفع الشهر</string>
+    <string name="filter_unpaid">لم يدفع</string>
+    <string name="filter_suspended">المُعلّقون</string>
+    <string name="paid_badge">تم الدفع ✓</string>
+    <string name="unpaid_badge">لم يدفع ✕</string>
+    <string name="siblings_badge">أخوات</string>
+    <string name="link_sibling">ربط بأخ/أخت في السنتر</string>
+    <string name="pay_single_student">تسجيل الدفع لهذا الطالب فقط</string>
+    <string name="pay_all_siblings">تسجيل الدفع للأخوات معاً</string>
+    <string name="backup_export">تصدير نسخة احتياطية (JSON)</string>
+    <string name="backup_import">استعادة نسخة احتياطية (JSON)</string>
+</resources>

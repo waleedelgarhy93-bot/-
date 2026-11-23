@@ -1,0 +1,6 @@
+{
+  "name": "سجل السنتر",
+  "description": "تطبيق محلي لإدارة السناتر التعليمية وحضور الطلاب والمصروفات الشهرية والأخوات والنسخ الاحتياطي",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

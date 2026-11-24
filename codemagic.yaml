@@ -6,13 +6,15 @@ workflows:
     environment:
       java: 21
     scripts:
-      - name: Generate Keystore, Fix AGP & CompileSdk, Build Debug APK
+      - name: Generate Keystore, Fix AGP, AndroidX & Build Debug APK
         script: |
           if [ ! -f "debug.keystore" ]; then
             keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
           find . -type f \( -name "*.kts" -o -name "*.gradle" -o -name "*.toml" \) -exec sed -i.bak 's/9\.1\.1/8.9.1/g' {} +
           sed -i.bak 's/compileSdk { version = release(36) { minorApiLevel = 1 } }/compileSdk = 35/g' app/build.gradle.kts
+          echo "" >> gradle.properties
+          echo "android.useAndroidX=true" >> gradle.properties
           gradle assembleDebug
     artifacts:
       - app/build/outputs/apk/debug/*.apk

@@ -76,7 +76,7 @@ abstract class AppDatabase : RoomDatabase() {
             defaultStages.forEach { (name, order) ->
                 db.execSQL(
                     "INSERT INTO grade_stages (name, sortOrder) VALUES (?, ?)",
-                    arrayOf(name, order)
+                    arrayOf<Any>(name, order)
                 )
             }
         }

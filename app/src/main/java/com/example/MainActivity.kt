@@ -22,6 +22,7 @@ import com.example.ui.screens.BackupRestoreScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.GroupDetailScreen
 import com.example.ui.screens.ManageTaxonomyScreen
+import com.example.ui.screens.PaymentsScreen
 import com.example.ui.screens.StudentFormScreen
 import com.example.ui.theme.CenterLedgerTheme
 import com.example.ui.viewmodel.LedgerViewModel
@@ -32,6 +33,7 @@ private object Routes {
     const val STUDENT_FORM = "student_form/{groupId}?studentId={studentId}"
     const val MANAGE_TAXONOMY = "manage_taxonomy"
     const val BACKUP_RESTORE = "backup_restore"
+    const val PAYMENTS = "payments"
 
     fun groupDetail(groupId: Long) = "group/$groupId"
     fun studentForm(groupId: Long, studentId: Long? = null): String =
@@ -64,6 +66,7 @@ private fun CenterLedgerApp() {
     val dashboardState by viewModel.dashboardState.collectAsStateWithLifecycle()
     val groupDetailState by viewModel.groupDetailState.collectAsStateWithLifecycle()
     val pendingRestore by viewModel.pendingRestorePayload.collectAsStateWithLifecycle()
+    val pendingImport by viewModel.pendingImport.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         viewModel.snackbarMessages.collect { message ->
@@ -92,7 +95,25 @@ private fun CenterLedgerApp() {
                 onSaveGroup = viewModel::saveStudyGroup,
                 onDeleteGroup = viewModel::deleteStudyGroup,
                 onOpenManageTaxonomy = { navController.navigate(Routes.MANAGE_TAXONOMY) },
-                onOpenBackupRestore = { navController.navigate(Routes.BACKUP_RESTORE) }
+                onOpenBackupRestore = { navController.navigate(Routes.BACKUP_RESTORE) },
+                onOpenPayments = { navController.navigate(Routes.PAYMENTS) }
+            )
+        }
+
+        composable(Routes.PAYMENTS) {
+            val paymentsState by viewModel.paymentsState.collectAsStateWithLifecycle()
+            PaymentsScreen(
+                state = paymentsState,
+                snackbarHostState = snackbarHostState,
+                onNavigateBack = { navController.popBackStack() },
+                onPreviousMonth = viewModel::previousMonth,
+                onNextMonth = viewModel::nextMonth,
+                onResetCurrentMonth = viewModel::resetToCurrentMonth,
+                onSelectCenter = viewModel::selectPaymentsCenter,
+                onSelectGroup = viewModel::selectPaymentsGroup,
+                onSelectStatus = viewModel::selectPaymentsStatus,
+                onSetPaid = viewModel::setSingleStudentPaid,
+                onExport = viewModel::exportPayments
             )
         }
 
@@ -127,7 +148,17 @@ private fun CenterLedgerApp() {
                 onDeleteStudent = viewModel::deleteStudent,
                 onSetSingleStudentPaid = viewModel::setSingleStudentPaid,
                 onMarkAllSiblingsPaid = viewModel::markAllSiblingsPaid,
-                onCycleSession = viewModel::cycleSession,
+                onShiftDay = viewModel::shiftDay,
+                onPickDate = viewModel::selectDate,
+                onToday = viewModel::goToToday,
+                onMarkAttendance = viewModel::markAttendance,
+                onMarkAllPresent = viewModel::markAllPresent,
+                onDeleteGroup = viewModel::deleteStudyGroup,
+                pendingImport = pendingImport,
+                onImportUri = viewModel::inspectImport,
+                onConfirmImport = viewModel::confirmImport,
+                onDismissImport = viewModel::dismissImport,
+                onExport = viewModel::exportGroup,
                 onVoiceUnavailable = { viewModel.emitMessage(voiceUnavailableText) }
             )
         }

@@ -1,6 +1,22 @@
 package com.example.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.rememberDatePickerState
+import com.example.data.repository.ImportedStudent
+import com.example.util.DayDate
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -23,6 +39,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -113,9 +130,32 @@ fun GroupDetailScreen(
     onDeleteStudent: (StudentEntity) -> Unit,
     onSetSingleStudentPaid: (Long, Boolean, String) -> Unit,
     onMarkAllSiblingsPaid: (String) -> Unit,
-    onCycleSession: (Long, Int) -> Unit,
+    onShiftDay: (Int) -> Unit,
+    onPickDate: (DayDate) -> Unit,
+    onToday: () -> Unit,
+    onMarkAttendance: (Long, String) -> Unit,
+    onMarkAllPresent: () -> Unit,
+    onDeleteGroup: (StudyGroupEntity) -> Unit,
+    pendingImport: List<ImportedStudent>?,
+    onImportUri: (Uri) -> Unit,
+    onConfirmImport: () -> Unit,
+    onDismissImport: () -> Unit,
+    onExport: (Uri, Boolean) -> Unit,
     onVoiceUnavailable: () -> Unit
 ) {
+    var showMenu by remember { mutableStateOf(false) }
+    var confirmDeleteGroup by remember { mutableStateOf(false) }
+    var showDatePicker by remember { mutableStateOf(false) }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(onImportUri)
+    }
+    val excelLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    ) { uri -> uri?.let { onExport(it, false) } }
+    val pdfLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
+        uri?.let { onExport(it, true) }
+    }
+    val exportName = "${state.group?.groupName ?: "مجموعة"} - ${state.selectedMonth.toArabicDisplay()}"
     var siblingPromptRow by remember { mutableStateOf<StudentAttendanceRowUi?>(null) }
     var undoPaymentRow by remember { mutableStateOf<StudentAttendanceRowUi?>(null) }
     var deletingStudent by remember { mutableStateOf<StudentEntity?>(null) }
@@ -179,6 +219,52 @@ fun GroupDetailScreen(
                                 tint = MaterialTheme.colorScheme.primary
                             )
                         }
+                        Box {
+                            IconButton(onClick = { showMenu = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.cd_more_options))
+                            }
+                            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("تحضير الكل (${state.selectedDate.shortLabel()})") },
+                                    leadingIcon = { Icon(Icons.Default.DoneAll, contentDescription = null) },
+                                    onClick = { showMenu = false; onMarkAllPresent() }
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("استيراد أسماء من Excel") },
+                                    leadingIcon = { Icon(Icons.Default.UploadFile, contentDescription = null) },
+                                    onClick = {
+                                        showMenu = false
+                                        importLauncher.launch(
+                                            arrayOf(
+                                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                                "application/vnd.ms-excel",
+                                                "text/csv",
+                                                "text/comma-separated-values",
+                                                "text/plain",
+                                                "application/octet-stream"
+                                            )
+                                        )
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("تصدير Excel") },
+                                    leadingIcon = { Icon(Icons.Default.TableChart, contentDescription = null) },
+                                    onClick = { showMenu = false; excelLauncher.launch("$exportName.xlsx") }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("تصدير PDF") },
+                                    leadingIcon = { Icon(Icons.Default.PictureAsPdf, contentDescription = null) },
+                                    onClick = { showMenu = false; pdfLauncher.launch("$exportName.pdf") }
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("حذف المجموعة", color = MaterialTheme.colorScheme.error) },
+                                    leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                    onClick = { showMenu = false; confirmDeleteGroup = true }
+                                )
+                            }
+                        }
                     }
                 }
             )
@@ -213,13 +299,17 @@ fun GroupDetailScreen(
                 ),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Month Switcher
+                // Day picker: attendance is recorded for this day
                 item {
-                    MonthSelectorBar(
-                        selectedMonth = state.selectedMonth,
-                        onPreviousMonth = onPreviousMonth,
-                        onNextMonth = onNextMonth,
-                        onResetCurrent = onResetCurrentMonth
+                    DaySelectorBar(
+                        date = state.selectedDate,
+                        present = state.dayPresent,
+                        absent = state.dayAbsent,
+                        total = state.filterCounts.activeAll,
+                        onPrevious = { onShiftDay(-1) },
+                        onNext = { onShiftDay(1) },
+                        onOpenPicker = { showDatePicker = true },
+                        onToday = onToday
                     )
                 }
 
@@ -310,13 +400,6 @@ fun GroupDetailScreen(
                     }
                 }
 
-                // Session Color Legend
-                if (state.students.isNotEmpty() && state.selectedFilter != GroupStudentFilter.SUSPENDED) {
-                    item {
-                        SessionLegendRow()
-                    }
-                }
-
                 // Student Cards or Empty State
                 if (state.students.isEmpty()) {
                     item {
@@ -327,8 +410,9 @@ fun GroupDetailScreen(
                         )
                     }
                 } else {
-                    items(state.students, key = { it.student.id }) { row ->
+                    itemsIndexed(state.students, key = { _, r -> r.student.id }) { index, row ->
                         StudentAttendanceCard(
+                            number = index + 1,
                             row = row,
                             onPaymentClick = {
                                 if (row.isPaid) {
@@ -339,9 +423,8 @@ fun GroupDetailScreen(
                                     onSetSingleStudentPaid(row.student.id, true, row.student.fullName)
                                 }
                             },
-                            onSessionClick = { index ->
-                                onCycleSession(row.student.id, index)
-                            },
+                            onPresent = { onMarkAttendance(row.student.id, "PRESENT") },
+                            onAbsent = { onMarkAttendance(row.student.id, "ABSENT") },
                             onEdit = { onEditStudent(row.student.id) },
                             onToggleSuspension = { onToggleStudentSuspension(row.student) },
                             onDelete = { deletingStudent = row.student }
@@ -429,6 +512,65 @@ fun GroupDetailScreen(
         )
     }
 
+    if (showDatePicker) {
+        val pickerState = rememberDatePickerState(initialSelectedDateMillis = state.selectedDate.toUtcMillis())
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    pickerState.selectedDateMillis?.let { onPickDate(DayDate.fromUtcMillis(it)) }
+                    showDatePicker = false
+                }) { Text("تمام") }
+            },
+            dismissButton = { TextButton(onClick = { showDatePicker = false }) { Text("إلغاء") } }
+        ) {
+            DatePicker(state = pickerState)
+        }
+    }
+
+    pendingImport?.let { list ->
+        AlertDialog(
+            onDismissRequest = onDismissImport,
+            title = { Text("استيراد ${list.size} اسم") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("هيتضافوا لمجموعة \"${group?.groupName.orEmpty()}\". الأسماء الموجودة قبل كده مش هتتكرر.")
+                    Spacer(Modifier.height(6.dp))
+                    list.take(8).forEachIndexed { i, st ->
+                        Text(
+                            "${i + 1}. ${st.name}" + if (st.parentPhone.isNotBlank()) "  •  ${st.parentPhone}" else "",
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (list.size > 8) Text("… و${list.size - 8} كمان", style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = { Button(onClick = onConfirmImport) { Text("إضافة") } },
+            dismissButton = { TextButton(onClick = onDismissImport) { Text("إلغاء") } }
+        )
+    }
+
+    if (confirmDeleteGroup && group != null) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteGroup = false },
+            title = { Text("حذف المجموعة؟") },
+            text = { Text("سيتم حذف مجموعة \"${group.groupName}\" وكل طلابها وسجلات الحضور والدفع نهائياً.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmDeleteGroup = false
+                        onDeleteGroup(group)
+                        onNavigateBack()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) { Text("حذف نهائي") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteGroup = false }) { Text("إلغاء") } }
+        )
+    }
+
     // Edit Current Group Dialog
     if (showEditGroupDialog && group != null) {
         AddEditGroupDialog(
@@ -503,46 +645,12 @@ private fun MiniFinanceColumn(
 }
 
 @Composable
-private fun SessionLegendRow() {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        LegendDot(color = LedgerStatusColors.UnmarkedFill, text = "غير محدد")
-        LegendDot(color = LedgerStatusColors.PresentFill, text = "حاضر")
-        LegendDot(color = LedgerStatusColors.AbsentFill, text = "غائب")
-        LegendDot(color = LedgerStatusColors.ExcusedFill, text = "بإذن")
-    }
-}
-
-@Composable
-private fun LegendDot(color: Color, text: String) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(5.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(10.dp)
-                .clip(CircleShape)
-                .background(color)
-        )
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-@Composable
 private fun StudentAttendanceCard(
+    number: Int,
     row: StudentAttendanceRowUi,
     onPaymentClick: () -> Unit,
-    onSessionClick: (Int) -> Unit,
+    onPresent: () -> Unit,
+    onAbsent: () -> Unit,
     onEdit: () -> Unit,
     onToggleSuspension: () -> Unit,
     onDelete: () -> Unit
@@ -587,7 +695,7 @@ private fun StudentAttendanceCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = row.student.fullName,
+                            text = "$number. ${row.student.fullName}",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface,
@@ -744,73 +852,38 @@ private fun StudentAttendanceCard(
             } else {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val payBg by animateColorAsState(
-                        targetValue = if (row.isPaid) LedgerStatusColors.PaidContainer else LedgerStatusColors.UnpaidContainer,
-                        animationSpec = spring(),
-                        label = "pay_bg"
+                    ActionToggleButton(
+                        label = "حضر",
+                        icon = Icons.Default.Check,
+                        selected = row.dayState == "PRESENT",
+                        tint = LedgerStatusColors.PresentFill,
+                        onClick = onPresent,
+                        modifier = Modifier.weight(1f).testTag("present_${row.student.id}")
                     )
-                    val payText by animateColorAsState(
-                        targetValue = if (row.isPaid) LedgerStatusColors.PaidText else LedgerStatusColors.UnpaidText,
-                        animationSpec = spring(),
-                        label = "pay_text"
+                    ActionToggleButton(
+                        label = "غاب",
+                        icon = Icons.Default.Close,
+                        selected = row.dayState == "ABSENT",
+                        tint = LedgerStatusColors.AbsentFill,
+                        onClick = onAbsent,
+                        modifier = Modifier.weight(1f).testTag("absent_${row.student.id}")
                     )
-                    val payBorder = if (row.isPaid) LedgerStatusColors.PaidBorder else LedgerStatusColors.UnpaidBorder
-
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = payBg,
-                        border = BorderStroke(1.dp, payBorder),
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .clip(RoundedCornerShape(14.dp))
-                            .clickable(onClick = onPaymentClick)
-                            .testTag("payment_toggle_${row.student.id}")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (row.isPaid) Icons.Default.Check else Icons.Default.Close,
-                                contentDescription = null,
-                                tint = payText,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Text(
-                                text = if (row.isPaid) {
-                                    "تم الدفع ✓ • ${Formatters.formatEgp(row.paidAmount)}"
-                                } else {
-                                    "لم يدفع ✕ • ${Formatters.formatEgp(row.expectedAmount)}"
-                                },
-                                style = MaterialTheme.typography.labelLarge,
-                                color = payText
-                            )
-                        }
-                    }
-
-                    // Attendance counter chip
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
-                    ) {
-                        Text(
-                            text = "حضور ${row.presentCount} • غياب ${row.absentCount}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                        )
-                    }
+                    ActionToggleButton(
+                        label = if (row.isPaid) "دفع ✓" else "دفع",
+                        icon = Icons.Default.Payments,
+                        selected = row.isPaid,
+                        tint = LedgerStatusColors.PaidText,
+                        onClick = onPaymentClick,
+                        modifier = Modifier.weight(1f).testTag("payment_toggle_${row.student.id}")
+                    )
                 }
-
-                // 8 Interactive Session Pills (4 per row for spacious >=48dp touch targets)
-                SessionPillsGrid(
-                    studentId = row.student.id,
-                    sessions = row.sessionStatuses,
-                    onSessionClick = onSessionClick
+                Text(
+                    text = "الشهر ده: حضر ${row.monthPresent} • غاب ${row.monthAbsent} • " +
+                        if (row.isPaid) "دفع ${Formatters.formatEgp(row.paidAmount)}" else "مطلوب ${Formatters.formatEgp(row.expectedAmount)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -818,100 +891,84 @@ private fun StudentAttendanceCard(
 }
 
 @Composable
-private fun SessionPillsGrid(
-    studentId: Long,
-    sessions: List<SessionEntry>,
-    onSessionClick: (Int) -> Unit
+private fun ActionToggleButton(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    selected: Boolean,
+    tint: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val rows = sessions.withIndex().chunked(4)
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        rows.forEach { chunk ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                chunk.forEach { indexedEntry ->
-                    SessionPill(
-                        index = indexedEntry.index,
-                        entry = indexedEntry.value,
-                        onClick = { onSessionClick(indexedEntry.index) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("session_pill_${studentId}_${indexedEntry.index + 1}")
-                    )
-                }
-                // Fill remaining slots in last row if sessionsPerMonth is not multiple of 4
-                repeat(4 - chunk.size) {
-                    Spacer(modifier = Modifier.weight(1f))
-                }
-            }
+    val bg by animateColorAsState(if (selected) tint else tint.copy(alpha = 0.08f), spring(), label = "btn_bg")
+    val fg by animateColorAsState(if (selected) Color.White else tint, spring(), label = "btn_fg")
+    Surface(
+        modifier = modifier
+            .height(46.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = bg,
+        border = BorderStroke(1.dp, tint.copy(alpha = if (selected) 1f else 0.45f))
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
+            Text(label, color = fg, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, maxLines = 1)
         }
     }
 }
 
 @Composable
-private fun SessionPill(
-    index: Int,
-    entry: SessionEntry,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
+private fun DaySelectorBar(
+    date: DayDate,
+    present: Int,
+    absent: Int,
+    total: Int,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onOpenPicker: () -> Unit,
+    onToday: () -> Unit
 ) {
-    val targetBg = when (entry.state) {
-        SessionState.UNMARKED -> LedgerStatusColors.UnmarkedBg
-        SessionState.PRESENT -> LedgerStatusColors.PresentBg
-        SessionState.ABSENT -> LedgerStatusColors.AbsentBg
-        SessionState.EXCUSED -> LedgerStatusColors.ExcusedBg
-    }
-    val targetContent = when (entry.state) {
-        SessionState.UNMARKED -> LedgerStatusColors.UnmarkedFill
-        SessionState.PRESENT -> LedgerStatusColors.PresentFill
-        SessionState.ABSENT -> LedgerStatusColors.AbsentFill
-        SessionState.EXCUSED -> LedgerStatusColors.ExcusedFill
-    }
-    val targetBorder = when (entry.state) {
-        SessionState.UNMARKED -> LedgerStatusColors.UnmarkedBorder
-        SessionState.PRESENT -> LedgerStatusColors.PresentBorder
-        SessionState.ABSENT -> LedgerStatusColors.AbsentBorder
-        SessionState.EXCUSED -> LedgerStatusColors.ExcusedBorder
-    }
-
-    val bg by animateColorAsState(targetValue = targetBg, animationSpec = spring(), label = "pill_bg")
-    val fg by animateColorAsState(targetValue = targetContent, animationSpec = spring(), label = "pill_fg")
-
-    val stateLabel = when (entry.state) {
-        SessionState.UNMARKED -> "—"
-        SessionState.PRESENT -> "حاضر"
-        SessionState.ABSENT -> "غائب"
-        SessionState.EXCUSED -> "بإذن"
-    }
-
     Surface(
-        modifier = modifier
-            .height(48.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
-        color = bg,
-        border = BorderStroke(1.dp, targetBorder)
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Column(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "ح${index + 1}",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = fg
-            )
-            val dateText = Formatters.formatShortDate(entry.dateMillis)
-            Text(
-                text = if (dateText.isNotEmpty()) "$stateLabel $dateText" else stateLabel,
-                style = MaterialTheme.typography.labelSmall,
-                color = fg.copy(alpha = 0.9f),
-                maxLines = 1
-            )
+            IconButton(onClick = onPrevious) {
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "اليوم اللي قبله", tint = MaterialTheme.colorScheme.primary)
+            }
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onOpenPicker)
+                    .padding(vertical = 4.dp)
+            ) {
+                Text(date.toArabicDisplay(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "حضر $present • غاب $absent • من $total",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (date != DayDate.today()) {
+                    TextButton(onClick = onToday, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp), modifier = Modifier.height(30.dp)) {
+                        Text("ارجع للنهاردة", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+            IconButton(onClick = onNext) {
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "اليوم اللي بعده", tint = MaterialTheme.colorScheme.primary)
+            }
         }
     }
 }

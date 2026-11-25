@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AppDatabase
+import com.example.data.model.AttendanceEntity
 import com.example.data.model.BackupPayload
 import com.example.data.model.CenterEntity
 import com.example.data.model.GradeStageEntity
@@ -17,7 +18,15 @@ import com.example.data.model.StudentEntity
 import com.example.data.model.StudentStatus
 import com.example.data.model.StudyGroupEntity
 import com.example.data.repository.LedgerRepository
+import com.example.data.repository.ImportedStudent
+import com.example.util.DayDate
+import com.example.util.ExportTable
+import com.example.util.Formatters
 import com.example.util.MonthYear
+import com.example.util.OldExcelFormatException
+import com.example.util.SheetIO
+import java.text.Collator
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -90,7 +99,13 @@ data class StudentAttendanceRowUi(
     val isPaid: Boolean,
     val paymentDate: Long?,
     val sessionStatuses: List<SessionEntry>,
-    val linkedActiveSiblings: List<LinkedSiblingPreview>
+    val linkedActiveSiblings: List<LinkedSiblingPreview>,
+    /** PRESENT / ABSENT on the selected day, null if not marked. */
+    val dayState: String? = null,
+    val monthPresent: Int = 0,
+    val monthAbsent: Int = 0,
+    /** dateKey -> PRESENT / ABSENT for the selected month. */
+    val monthMarks: Map<String, String> = emptyMap()
 ) {
     val hasSiblings: Boolean get() = student.siblingGroupId != null
     val presentCount: Int get() = sessionStatuses.count { it.state == SessionState.PRESENT }
@@ -123,12 +138,46 @@ data class GroupDetailUiState(
     val centerName: String = "",
     val stageName: String = "",
     val selectedMonth: MonthYear = MonthYear.current(),
+    val selectedDate: DayDate = DayDate.today(),
+    val dayPresent: Int = 0,
+    val dayAbsent: Int = 0,
+    /** All active students (ignores search and filter), for export. */
+    val exportRows: List<StudentAttendanceRowUi> = emptyList(),
     val searchQuery: String = "",
     val selectedFilter: GroupStudentFilter = GroupStudentFilter.ACTIVE_ALL,
     val financialSummary: FinancialSummaryUi = FinancialSummaryUi(),
     val filterCounts: GroupFilterCounts = GroupFilterCounts(),
     val students: List<StudentAttendanceRowUi> = emptyList()
 )
+
+enum class PaymentStatusFilter { ALL, PAID, UNPAID }
+
+data class PaymentRowUi(
+    val student: StudentEntity,
+    val groupName: String,
+    val centerName: String,
+    val expected: Double,
+    val paid: Double,
+    val isPaid: Boolean,
+    val paymentDate: Long?
+)
+
+data class PaymentsUiState(
+    val selectedMonth: MonthYear = MonthYear.current(),
+    val centers: List<CenterEntity> = emptyList(),
+    /** Groups of the selected center (or all). */
+    val groups: List<StudyGroupEntity> = emptyList(),
+    val selectedCenterId: Long? = null,
+    val selectedGroupId: Long? = null,
+    val status: PaymentStatusFilter = PaymentStatusFilter.ALL,
+    val rows: List<PaymentRowUi> = emptyList(),
+    val totalExpected: Double = 0.0,
+    val totalCollected: Double = 0.0,
+    val paidCount: Int = 0,
+    val unpaidCount: Int = 0
+)
+
+private class AttendanceContext(val month: MonthYear, val date: DayDate, val entries: List<AttendanceEntity>)
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class LedgerViewModel(application: Application) : AndroidViewModel(application) {
@@ -149,11 +198,31 @@ class LedgerViewModel(application: Application) : AndroidViewModel(application) 
     private val _snackbarMessages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val snackbarMessages: SharedFlow<String> = _snackbarMessages.asSharedFlow()
 
+    private val _selectedDate = MutableStateFlow(DayDate.today())
+
+    private val _payCenterId = MutableStateFlow<Long?>(null)
+    private val _payGroupId = MutableStateFlow<Long?>(null)
+    private val _payStatus = MutableStateFlow(PaymentStatusFilter.ALL)
+
+    private val _pendingImport = MutableStateFlow<List<ImportedStudent>?>(null)
+    val pendingImport: StateFlow<List<ImportedStudent>?> = _pendingImport.asStateFlow()
+
+    private val collator: Collator = Collator.getInstance(Locale("ar"))
+
     private val _pendingRestorePayload = MutableStateFlow<BackupPayload?>(null)
     val pendingRestorePayload: StateFlow<BackupPayload?> = _pendingRestorePayload.asStateFlow()
 
     private val currentMonthRecordsFlow = _selectedMonth.flatMapLatest { monthYear ->
         repository.observeMonthlyRecordsByMonth(monthYear.toStorageKey())
+    }
+
+    private val monthAttendanceFlow = _selectedMonth.flatMapLatest { m ->
+        val (from, to) = DayDate.monthRange(m)
+        repository.observeAttendanceBetween(from, to)
+    }
+
+    private val attendanceContextFlow = combine(_selectedMonth, _selectedDate, monthAttendanceFlow) { m, d, list ->
+        AttendanceContext(m, d, list)
     }
 
     init {
@@ -301,13 +370,16 @@ class LedgerViewModel(application: Application) : AndroidViewModel(application) 
 
     val groupDetailState: StateFlow<GroupDetailUiState> = combine(
         coreSnapshotFlow,
-        _selectedMonth,
+        attendanceContextFlow,
         _activeGroupId,
         _groupSearchQuery,
         _groupStudentFilter
-    ) { snapshot, month, groupId, query, filter ->
+    ) { snapshot, att, groupId, query, filter ->
+        val month = att.month
+        val dayKey = att.date.toKey()
         val group = snapshot.groups.firstOrNull { it.id == groupId }
-            ?: return@combine GroupDetailUiState(selectedMonth = month)
+            ?: return@combine GroupDetailUiState(selectedMonth = month, selectedDate = att.date)
+        val attendanceByStudent = att.entries.groupBy { it.studentId }
 
         val centersById = snapshot.centers.associateBy { it.id }
         val stagesById = snapshot.stages.associateBy { it.id }
@@ -318,6 +390,7 @@ class LedgerViewModel(application: Application) : AndroidViewModel(application) 
             .groupBy { it.siblingGroupId!! }
 
         val groupStudents = snapshot.students.filter { it.groupId == group.id }
+            .sortedWith(compareBy(collator) { it.fullName })
         val allRows = groupStudents.map { student ->
             val rec = recordsByStudentId[student.id]
             val expected = rec?.expectedAmount
@@ -333,6 +406,7 @@ class LedgerViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 ?: List(group.sessionsPerMonth.coerceAtLeast(1)) { SessionEntry() }
 
+            val marks = attendanceByStudent[student.id].orEmpty().associate { it.dateKey to it.state }
             val linkedActiveSiblings = student.siblingGroupId?.let { key ->
                 siblingsByGroupKey[key].orEmpty()
                     .filter { it.id != student.id && it.status == StudentStatus.ACTIVE }
@@ -359,7 +433,11 @@ class LedgerViewModel(application: Application) : AndroidViewModel(application) 
                 isPaid = rec?.isPaid == true,
                 paymentDate = rec?.paymentDate,
                 sessionStatuses = sessions,
-                linkedActiveSiblings = linkedActiveSiblings
+                linkedActiveSiblings = linkedActiveSiblings,
+                dayState = marks[dayKey],
+                monthPresent = marks.values.count { it == "PRESENT" },
+                monthAbsent = marks.values.count { it == "ABSENT" },
+                monthMarks = marks
             )
         }
 
@@ -395,6 +473,10 @@ class LedgerViewModel(application: Application) : AndroidViewModel(application) 
             centerName = centersById[group.centerId]?.name ?: "",
             stageName = stagesById[group.gradeStageId]?.name ?: "",
             selectedMonth = month,
+            selectedDate = att.date,
+            dayPresent = activeRows.count { it.dayState == "PRESENT" },
+            dayAbsent = activeRows.count { it.dayState == "ABSENT" },
+            exportRows = activeRows,
             searchQuery = query,
             selectedFilter = filter,
             financialSummary = FinancialSummaryUi(
@@ -421,17 +503,222 @@ class LedgerViewModel(application: Application) : AndroidViewModel(application) 
         initialValue = GroupDetailUiState()
     )
 
+    val paymentsState: StateFlow<PaymentsUiState> = combine(
+        coreSnapshotFlow,
+        _selectedMonth,
+        _payCenterId,
+        _payGroupId,
+        _payStatus
+    ) { snapshot, month, centerId, groupId, status ->
+        val centersById = snapshot.centers.associateBy { it.id }
+        val centerGroups = snapshot.groups.filter { centerId == null || it.centerId == centerId }
+        val effectiveGroupId = groupId?.takeIf { id -> centerGroups.any { it.id == id } }
+        val targetGroups = centerGroups.filter { effectiveGroupId == null || it.id == effectiveGroupId }
+        val groupsById = targetGroups.associateBy { it.id }
+        val records = snapshot.records.associateBy { it.studentId }
+        val all = snapshot.students
+            .filter { it.status == StudentStatus.ACTIVE && groupsById.containsKey(it.groupId) }
+            .map { st ->
+                val g = groupsById.getValue(st.groupId)
+                val rec = records[st.id]
+                PaymentRowUi(
+                    student = st,
+                    groupName = g.groupName,
+                    centerName = centersById[g.centerId]?.name.orEmpty(),
+                    expected = rec?.expectedAmount ?: (g.monthlyFee - st.siblingDiscountAmount).coerceAtLeast(0.0),
+                    paid = if (rec?.isPaid == true) rec.paidAmount else 0.0,
+                    isPaid = rec?.isPaid == true,
+                    paymentDate = rec?.paymentDate
+                )
+            }
+            .sortedWith(compareBy<PaymentRowUi, String>(collator) { it.centerName }
+                .thenBy(collator) { it.groupName }
+                .thenBy(collator) { it.student.fullName })
+        val shown = when (status) {
+            PaymentStatusFilter.ALL -> all
+            PaymentStatusFilter.PAID -> all.filter { it.isPaid }
+            PaymentStatusFilter.UNPAID -> all.filter { !it.isPaid }
+        }
+        PaymentsUiState(
+            selectedMonth = month,
+            centers = snapshot.centers,
+            groups = centerGroups,
+            selectedCenterId = centerId,
+            selectedGroupId = effectiveGroupId,
+            status = status,
+            rows = shown,
+            totalExpected = all.sumOf { it.expected },
+            totalCollected = all.sumOf { it.paid },
+            paidCount = all.count { it.isPaid },
+            unpaidCount = all.count { !it.isPaid }
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = PaymentsUiState()
+    )
+
     // --- Month & Filter Controls ---
-    fun previousMonth() {
-        _selectedMonth.value = _selectedMonth.value.previous()
+    private fun setMonth(m: MonthYear) {
+        _selectedMonth.value = m
+        if (_selectedDate.value.monthYear() != m) _selectedDate.value = DayDate.defaultFor(m)
     }
 
-    fun nextMonth() {
-        _selectedMonth.value = _selectedMonth.value.next()
+    fun previousMonth() = setMonth(_selectedMonth.value.previous())
+
+    fun nextMonth() = setMonth(_selectedMonth.value.next())
+
+    fun resetToCurrentMonth() = setMonth(MonthYear.current())
+
+    // --- Day (attendance) ---
+    fun selectDate(date: DayDate) {
+        _selectedDate.value = date
+        if (_selectedMonth.value != date.monthYear()) _selectedMonth.value = date.monthYear()
     }
 
-    fun resetToCurrentMonth() {
-        _selectedMonth.value = MonthYear.current()
+    fun shiftDay(days: Int) = selectDate(_selectedDate.value.plusDays(days))
+
+    fun goToToday() = selectDate(DayDate.today())
+
+    /** state = "PRESENT" or "ABSENT"; pressing the same one again clears it. */
+    fun markAttendance(studentId: Long, state: String) {
+        val key = _selectedDate.value.toKey()
+        viewModelScope.launch { repository.toggleAttendance(studentId, key, state) }
+    }
+
+    fun markAllPresent() {
+        val groupId = _activeGroupId.value ?: return
+        val key = _selectedDate.value.toKey()
+        viewModelScope.launch {
+            val n = repository.markAllPresent(groupId, key)
+            _snackbarMessages.tryEmit(if (n == 0) "كل الطلاب متسجلين بالفعل" else "تم تحضير $n طالب")
+        }
+    }
+
+    // --- Payments screen filters ---
+    fun selectPaymentsCenter(centerId: Long?) {
+        _payCenterId.value = centerId
+        _payGroupId.value = null
+    }
+
+    fun selectPaymentsGroup(groupId: Long?) {
+        _payGroupId.value = groupId
+    }
+
+    fun selectPaymentsStatus(status: PaymentStatusFilter) {
+        _payStatus.value = status
+    }
+
+    // --- Excel import ---
+    fun inspectImport(uri: Uri) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { SheetIO.parseStudents(SheetIO.readRows(getApplication(), uri)) }
+            }
+            result.onSuccess { list ->
+                if (list.isEmpty()) _snackbarMessages.tryEmit("مالقيتش أسماء في الملف")
+                else _pendingImport.value = list
+            }.onFailure { e ->
+                _snackbarMessages.tryEmit(
+                    if (e is OldExcelFormatException) "الملف ده Excel قديم (xls). افتحه واحفظه بصيغة xlsx أو CSV وجرّب تاني"
+                    else "تعذّر قراءة الملف"
+                )
+            }
+        }
+    }
+
+    fun dismissImport() {
+        _pendingImport.value = null
+    }
+
+    fun confirmImport() {
+        val list = _pendingImport.value ?: return
+        val groupId = _activeGroupId.value ?: return
+        _pendingImport.value = null
+        viewModelScope.launch {
+            val added = repository.importStudents(groupId, list, _selectedMonth.value.toStorageKey())
+            val skipped = list.size - added
+            _snackbarMessages.tryEmit(
+                if (skipped > 0) "تم إضافة $added طالب (و$skipped موجودين قبل كده)" else "تم إضافة $added طالب"
+            )
+        }
+    }
+
+    // --- Export (Excel / PDF) ---
+    private fun writeTable(uri: Uri, table: ExportTable, pdf: Boolean) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    getApplication<Application>().contentResolver.openOutputStream(uri)?.use { out ->
+                        if (pdf) SheetIO.writePdf(getApplication(), table, out) else SheetIO.writeXlsx(table, out)
+                    } ?: error("cannot open")
+                }
+            }
+            _snackbarMessages.tryEmit(if (result.isSuccess) "تم حفظ الملف" else "فشل حفظ الملف")
+        }
+    }
+
+    fun exportGroup(uri: Uri, pdf: Boolean) {
+        val s = groupDetailState.value
+        val group = s.group ?: return
+        val rows = s.exportRows
+        var dates = rows.flatMap { it.monthMarks.keys }.toSortedSet().toList()
+        if (pdf && dates.size > 16) dates = emptyList() // too many to fit on paper; counts are still shown
+        val headers = listOf("م", "الاسم", "ولي الأمر", "الدفع", "المبلغ", "حضور", "غياب") +
+            dates.map { DayDate.fromKey(it)?.shortLabel() ?: it }
+        val weights = listOf(0.6f, 3.4f, 1.8f, 1.1f, 1.1f, 0.8f, 0.8f) + dates.map { 0.7f }
+        val body = rows.mapIndexed { i, r ->
+            listOf<Any>(
+                i + 1,
+                r.student.fullName,
+                r.student.parentPhone.ifBlank { r.student.studentPhone },
+                if (r.isPaid) "دفع" else "لم يدفع",
+                if (r.isPaid) r.paidAmount else r.expectedAmount,
+                r.monthPresent,
+                r.monthAbsent
+            ) + dates.map { d ->
+                when (r.monthMarks[d]) { "PRESENT" -> "ح"; "ABSENT" -> "غ"; else -> "" }
+            }
+        }
+        val table = ExportTable(
+            title = "${group.groupName} — ${s.centerName} • ${s.stageName}",
+            subtitle = "${s.selectedMonth.toArabicDisplay()} • عدد الطلاب ${rows.size} • المواعيد: ${group.scheduleDaysAndTime}",
+            headers = headers,
+            rows = body,
+            weights = weights,
+            footer = "المُحصَّل ${Formatters.formatEgp(s.financialSummary.totalCollected)} من ${Formatters.formatEgp(s.financialSummary.totalExpected)} • " +
+                "دفع ${s.financialSummary.paidStudentCount} • لم يدفع ${s.financialSummary.unpaidStudentCount}"
+        )
+        writeTable(uri, table, pdf)
+    }
+
+    fun exportPayments(uri: Uri, pdf: Boolean) {
+        val s = paymentsState.value
+        val scope = buildList {
+            s.selectedCenterId?.let { id -> s.centers.firstOrNull { it.id == id }?.name?.let { add(it) } }
+            s.selectedGroupId?.let { id -> s.groups.firstOrNull { it.id == id }?.groupName?.let { add(it) } }
+        }.ifEmpty { listOf("كل السناتر") }.joinToString(" • ")
+        val statusLabel = when (s.status) {
+            PaymentStatusFilter.ALL -> ""
+            PaymentStatusFilter.PAID -> " • اللي دفعوا بس"
+            PaymentStatusFilter.UNPAID -> " • اللي لسه ما دفعوش"
+        }
+        val table = ExportTable(
+            title = "المدفوعات — ${s.selectedMonth.toArabicDisplay()}",
+            subtitle = scope + statusLabel,
+            headers = listOf("م", "الاسم", "السنتر", "المجموعة", "المطلوب", "المدفوع", "الحالة", "تاريخ الدفع"),
+            rows = s.rows.mapIndexed { i, r ->
+                listOf<Any>(
+                    i + 1, r.student.fullName, r.centerName, r.groupName, r.expected, r.paid,
+                    if (r.isPaid) "دفع" else "لم يدفع",
+                    r.paymentDate?.let { Formatters.formatFullDateTime(it).substringBefore(' ') }.orEmpty()
+                )
+            },
+            weights = listOf(0.6f, 3.2f, 1.8f, 2f, 1.1f, 1.1f, 1f, 1.4f),
+            footer = "المُحصَّل ${Formatters.formatEgp(s.totalCollected)} من ${Formatters.formatEgp(s.totalExpected)} • " +
+                "دفع ${s.paidCount} • لم يدفع ${s.unpaidCount}"
+        )
+        writeTable(uri, table, pdf)
     }
 
     fun selectCenterFilter(centerId: Long?) {
@@ -449,6 +736,9 @@ class LedgerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun openGroup(groupId: Long) {
+        if (_selectedDate.value.monthYear() != _selectedMonth.value) {
+            _selectedDate.value = DayDate.defaultFor(_selectedMonth.value)
+        }
         if (_activeGroupId.value != groupId) {
             _activeGroupId.value = groupId
             _groupSearchQuery.value = ""

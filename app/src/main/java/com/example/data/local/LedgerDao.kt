@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
+import com.example.data.model.AttendanceEntity
 import com.example.data.model.CenterEntity
 import com.example.data.model.GradeStageEntity
 import com.example.data.model.MonthlyRecordEntity
@@ -150,4 +151,26 @@ interface LedgerDao {
 
     @Query("DELETE FROM monthly_records")
     suspend fun clearMonthlyRecords()
+
+    // --- Daily attendance ---
+    @Query("SELECT * FROM attendance WHERE dateKey BETWEEN :fromKey AND :toKey")
+    fun observeAttendanceBetween(fromKey: String, toKey: String): Flow<List<AttendanceEntity>>
+
+    @Query("SELECT * FROM attendance WHERE studentId = :studentId AND dateKey = :dateKey LIMIT 1")
+    suspend fun getAttendance(studentId: Long, dateKey: String): AttendanceEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAttendance(entry: AttendanceEntity)
+
+    @Query("DELETE FROM attendance WHERE studentId = :studentId AND dateKey = :dateKey")
+    suspend fun deleteAttendance(studentId: Long, dateKey: String)
+
+    @Query("SELECT * FROM attendance ORDER BY id ASC")
+    suspend fun getAllAttendance(): List<AttendanceEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAttendanceList(entries: List<AttendanceEntity>)
+
+    @Query("DELETE FROM attendance")
+    suspend fun clearAttendance()
 }

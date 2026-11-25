@@ -2,6 +2,7 @@ package com.example.data.repository
 
 import androidx.room.withTransaction
 import com.example.data.local.AppDatabase
+import com.example.data.model.AttendanceEntity
 import com.example.data.model.BackupPayload
 import com.example.data.model.CenterEntity
 import com.example.data.model.GradeStageEntity
@@ -397,16 +398,88 @@ class LedgerRepository(
         }
     }
 
+    // --- Daily attendance ---
+    fun observeAttendanceBetween(fromKey: String, toKey: String): Flow<List<AttendanceEntity>> =
+        dao.observeAttendanceBetween(fromKey, toKey)
+
+    /** Sets PRESENT / ABSENT for one day; choosing the same state again clears it. */
+    suspend fun toggleAttendance(studentId: Long, dateKey: String, state: String) {
+        database.withTransaction {
+            val student = dao.getStudentById(studentId) ?: return@withTransaction
+            val existing = dao.getAttendance(studentId, dateKey)
+            if (existing?.state == state) {
+                dao.deleteAttendance(studentId, dateKey)
+            } else {
+                dao.upsertAttendance(
+                    AttendanceEntity(
+                        id = existing?.id ?: 0L,
+                        studentId = studentId,
+                        groupId = student.groupId,
+                        dateKey = dateKey,
+                        state = state
+                    )
+                )
+            }
+        }
+    }
+
+    /** Marks every active student of the group who is not marked yet as PRESENT. */
+    suspend fun markAllPresent(groupId: Long, dateKey: String): Int {
+        return database.withTransaction {
+            var count = 0
+            dao.getAllStudents()
+                .filter { it.groupId == groupId && it.status == StudentStatus.ACTIVE }
+                .forEach { st ->
+                    if (dao.getAttendance(st.id, dateKey) == null) {
+                        dao.upsertAttendance(AttendanceEntity(studentId = st.id, groupId = groupId, dateKey = dateKey, state = "PRESENT"))
+                        count++
+                    }
+                }
+            count
+        }
+    }
+
+    /** Adds students by name; names already in the group are skipped. Returns how many were added. */
+    suspend fun importStudents(groupId: Long, rows: List<ImportedStudent>, currentMonthYear: String): Int {
+        return database.withTransaction {
+            val group = dao.getStudyGroupById(groupId) ?: return@withTransaction 0
+            val existing = dao.getAllStudents().filter { it.groupId == groupId }
+                .map { normalizeName(it.fullName) }.toHashSet()
+            var added = 0
+            for (r in rows) {
+                val name = normalizeName(r.name)
+                if (name.isEmpty() || !existing.add(name)) continue
+                val id = dao.insertStudent(
+                    StudentEntity(groupId = groupId, fullName = name, studentPhone = r.studentPhone, parentPhone = r.parentPhone)
+                )
+                dao.insertMonthlyRecordIgnore(
+                    MonthlyRecordEntity(
+                        studentId = id,
+                        groupId = groupId,
+                        monthYear = currentMonthYear,
+                        expectedAmount = group.monthlyFee,
+                        sessionStatuses = List(group.sessionsPerMonth.coerceAtLeast(1)) { SessionEntry() }
+                    )
+                )
+                added++
+            }
+            added
+        }
+    }
+
+    private fun normalizeName(s: String) = s.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+
     // --- Backup & Restore (Local JSON) ---
     suspend fun exportBackupJson(): String {
         val payload = BackupPayload(
-            version = 1,
+            version = 2,
             exportedAtMillis = System.currentTimeMillis(),
             centers = dao.getAllCenters(),
             gradeStages = dao.getAllGradeStages(),
             studyGroups = dao.getAllStudyGroups(),
             students = dao.getAllStudents(),
-            monthlyRecords = dao.getAllMonthlyRecords()
+            monthlyRecords = dao.getAllMonthlyRecords(),
+            attendance = dao.getAllAttendance()
         )
         return backupAdapter.toJson(payload)
     }
@@ -418,6 +491,7 @@ class LedgerRepository(
     suspend fun restoreBackup(payload: BackupPayload) {
         database.withTransaction {
             // Clear in reverse FK order
+            dao.clearAttendance()
             dao.clearMonthlyRecords()
             dao.clearStudents()
             dao.clearStudyGroups()
@@ -430,6 +504,7 @@ class LedgerRepository(
             dao.insertStudyGroups(payload.studyGroups)
             dao.insertStudents(payload.students)
             dao.insertMonthlyRecordsReplace(payload.monthlyRecords)
+            dao.insertAttendanceList(payload.attendance)
         }
     }
 
@@ -451,3 +526,6 @@ class LedgerRepository(
         }
     }
 }
+
+/** A student row read from an Excel / CSV file. */
+data class ImportedStudent(val name: String, val parentPhone: String = "", val studentPhone: String = "")

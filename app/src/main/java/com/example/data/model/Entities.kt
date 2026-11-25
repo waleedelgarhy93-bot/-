@@ -135,13 +135,41 @@ data class MonthlyRecordEntity(
     val sessionStatuses: List<SessionEntry> = List(8) { SessionEntry() }
 )
 
+/** One student's attendance on one day. [state] is PRESENT or ABSENT (no row = not marked). */
+@JsonClass(generateAdapter = true)
+@Entity(
+    tableName = "attendance",
+    foreignKeys = [
+        ForeignKey(
+            entity = StudentEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["studentId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        Index(value = ["studentId", "dateKey"], unique = true),
+        Index(value = ["groupId"]),
+        Index(value = ["dateKey"])
+    ]
+)
+data class AttendanceEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val studentId: Long,
+    val groupId: Long,
+    /** yyyy-MM-dd */
+    val dateKey: String,
+    val state: String
+)
+
 @JsonClass(generateAdapter = true)
 data class BackupPayload(
-    val version: Int = 1,
+    val version: Int = 2,
     val exportedAtMillis: Long = System.currentTimeMillis(),
     val centers: List<CenterEntity>,
     val gradeStages: List<GradeStageEntity>,
     val studyGroups: List<StudyGroupEntity>,
     val students: List<StudentEntity>,
-    val monthlyRecords: List<MonthlyRecordEntity>
+    val monthlyRecords: List<MonthlyRecordEntity>,
+    val attendance: List<AttendanceEntity> = emptyList()
 )

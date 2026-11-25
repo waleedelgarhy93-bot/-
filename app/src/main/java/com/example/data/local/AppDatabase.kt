@@ -6,6 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.room.migration.Migration
+import com.example.data.model.AttendanceEntity
 import com.example.data.model.CenterEntity
 import com.example.data.model.GradeStageEntity
 import com.example.data.model.MonthlyRecordEntity
@@ -18,9 +20,10 @@ import com.example.data.model.StudyGroupEntity
         GradeStageEntity::class,
         StudyGroupEntity::class,
         StudentEntity::class,
-        MonthlyRecordEntity::class
+        MonthlyRecordEntity::class,
+        AttendanceEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -52,7 +55,23 @@ abstract class AppDatabase : RoomDatabase() {
                         prepopulateDefaults(db)
                     }
                 })
+                .addMigrations(MIGRATION_1_2)
                 .build()
+        }
+
+        /** v2: daily attendance table (old data is kept as is). */
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `attendance` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`studentId` INTEGER NOT NULL, `groupId` INTEGER NOT NULL, `dateKey` TEXT NOT NULL, " +
+                        "`state` TEXT NOT NULL, FOREIGN KEY(`studentId`) REFERENCES `students`(`id`) " +
+                        "ON UPDATE NO ACTION ON DELETE CASCADE )"
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_attendance_studentId_dateKey` ON `attendance` (`studentId`, `dateKey`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_attendance_groupId` ON `attendance` (`groupId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_attendance_dateKey` ON `attendance` (`dateKey`)")
+            }
         }
 
         private fun prepopulateDefaults(db: SupportSQLiteDatabase) {

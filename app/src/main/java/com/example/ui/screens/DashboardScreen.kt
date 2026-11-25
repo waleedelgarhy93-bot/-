@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material3.AlertDialog
@@ -100,7 +101,8 @@ fun DashboardScreen(
     onSaveGroup: (StudyGroupEntity) -> Unit,
     onDeleteGroup: (StudyGroupEntity) -> Unit,
     onOpenManageTaxonomy: () -> Unit,
-    onOpenBackupRestore: () -> Unit
+    onOpenBackupRestore: () -> Unit,
+    onOpenPayments: () -> Unit
 ) {
     var showGroupDialog by remember { mutableStateOf(false) }
     var editingGroup by remember { mutableStateOf<StudyGroupEntity?>(null) }
@@ -168,6 +170,15 @@ fun DashboardScreen(
                         hasGroupScopeFilter = state.selectedGroupFilterId != null,
                         onClearGroupScopeFilter = { onSelectGroupFinanceFilter(null) }
                     )
+                }
+
+                // Quick actions
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        QuickActionTile("المدفوعات", Icons.Default.Payments, LedgerStatusColors.PaidText, Modifier.weight(1f), onOpenPayments)
+                        QuickActionTile("السناتر والمراحل", Icons.Default.AccountBalance, MaterialTheme.colorScheme.primary, Modifier.weight(1f), onOpenManageTaxonomy)
+                        QuickActionTile("نسخة احتياطية", Icons.Default.Backup, MaterialTheme.colorScheme.secondary, Modifier.weight(1f), onOpenBackupRestore)
+                    }
                 }
 
                 // Center Filter Row
@@ -357,6 +368,31 @@ fun DashboardScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun QuickActionTile(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    tint: Color,
+    modifier: Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = tint.copy(alpha = 0.08f),
+        border = BorderStroke(1.dp, tint.copy(alpha = 0.3f)),
+        modifier = modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick)
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(vertical = 12.dp, horizontal = 4.dp)
+        ) {
+            Icon(icon, contentDescription = null, tint = tint)
+            Spacer(Modifier.height(4.dp))
+            Text(label, style = MaterialTheme.typography.labelMedium, color = tint, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
 }
 
